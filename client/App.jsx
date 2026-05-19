@@ -48,12 +48,13 @@ export default function App() {
   const [userCodeLine, setUserCodeLine] = useState(1);
   const outputEditorRef = useRef(null);
 
-  const currentTargets = parseTargets(config);
-  const targetWeb = currentTargets.includes('web');
-  const targetEs5 = currentTargets.includes('es5');
+  const esMode = parseTargets(config).includes('es5') ? 'es5' : 'es6';
 
-  function toggleTarget(name, on) {
-    setConfig((src) => writeTarget(src, name, on));
+  function setEsMode(mode) {
+    setConfig((src) => {
+      const targets = mode === 'es5' ? ['web', 'es5'] : ['web'];
+      return setBabelMode(setTargets(src, targets), mode);
+    });
   }
 
   useEffect(() => {
@@ -118,12 +119,12 @@ export default function App() {
           actions={
             <>
               <label style={checkboxLabel}>
-                <input type="checkbox" checked={targetWeb} onChange={(e) => toggleTarget('web', e.target.checked)} />
-                web
+                <input type="radio" name="es-mode" checked={esMode === 'es5'} onChange={() => setEsMode('es5')} />
+                ES5
               </label>
               <label style={checkboxLabel}>
-                <input type="checkbox" checked={targetEs5} onChange={(e) => toggleTarget('es5', e.target.checked)} />
-                es5
+                <input type="radio" name="es-mode" checked={esMode === 'es6'} onChange={() => setEsMode('es6')} />
+                ES6
               </label>
             </>
           }
@@ -133,14 +134,24 @@ export default function App() {
         <Pane
           title="source (ES6+)"
           actions={
-            <label style={checkboxLabel}>
-              <input
-                type="checkbox"
-                checked={hasCoreJs(code)}
-                onChange={(e) => setCode((src) => toggleCoreJs(src, e.target.checked))}
-              />
-              core-js/stable
-            </label>
+            <>
+              <label style={checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={hasImport(code, 'core-js/stable')}
+                  onChange={(e) => setCode((src) => togglePolyfill(src, 'core-js/stable', e.target.checked))}
+                />
+                core-js/stable
+              </label>
+              <label style={checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={hasImport(code, 'intersection-observer')}
+                  onChange={(e) => setCode((src) => togglePolyfill(src, 'intersection-observer', e.target.checked))}
+                />
+                intersection-observer
+              </label>
+            </>
           }
         >
           <Editor language="javascript" theme="vs-dark" value={code} onChange={(v) => setCode(v ?? '')} options={editorOpts} />
@@ -182,24 +193,56 @@ function Pane({ title, actions, children }) {
 const paneBtn = { padding: '2px 8px', fontSize: 11, background: '#3c3c3c', color: '#ddd', border: '1px solid #555', borderRadius: 3, cursor: 'pointer' };
 const checkboxLabel = { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, cursor: 'pointer' };
 
-const CORE_JS_IMPORT = "import 'core-js/stable';";
+// Polyfills below are ordered: each must appear before the next when both are present.
+const POLYFILL_ORDER = ['core-js/stable', 'intersection-observer'];
 
-function hasCoreJs(src) {
-  return src.includes('core-js/stable');
+function hasImport(src, pkg) {
+  return src.includes(pkg);
 }
 
-function toggleCoreJs(src, on) {
+function importLine(pkg) {
+  return `import '${pkg}';`;
+}
+
+function togglePolyfill(src, pkg, on) {
   if (on) {
-    if (hasCoreJs(src)) return src;
-    const firstLine = src.split('\n', 1)[0];
-    const separator = firstLine.trim() === '' ? '\n' : '\n\n';
-    return CORE_JS_IMPORT + separator + src;
+    if (hasImport(src, pkg)) return src;
+    return insertPolyfill(src, pkg);
   }
+  return removePolyfill(src, pkg);
+}
+
+function insertPolyfill(src, pkg) {
+  const lines = src.split('\n');
+  // Find the last preceding polyfill that's already present; insert after it.
+  const order = POLYFILL_ORDER.indexOf(pkg);
+  let insertAfter = -1;
+  for (let i = 0; i < order; i++) {
+    const prev = POLYFILL_ORDER[i];
+    for (let j = 0; j < lines.length; j++) {
+      if (lines[j].includes(prev)) insertAfter = j;
+    }
+  }
+  if (insertAfter >= 0) {
+    lines.splice(insertAfter + 1, 0, importLine(pkg));
+    return lines.join('\n');
+  }
+  // No preceding polyfill present — prepend with blank-line separator if needed.
+  const firstLine = lines[0] ?? '';
+  const separator = firstLine.trim() === '' ? '\n' : '\n\n';
+  return importLine(pkg) + separator + src;
+}
+
+function removePolyfill(src, pkg) {
   const lines = src.split('\n');
   const out = [];
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes('core-js/stable')) {
-      if (i + 1 < lines.length && lines[i + 1].trim() === '') i++;
+    if (lines[i].includes(pkg)) {
+      // If the next line is blank and there are no remaining polyfill imports
+      // before it, drop the blank too (keeps spacing tidy when removing the
+      // last polyfill at the top of the file).
+      const noOtherPolyfillsAbove = !out.some((l) => POLYFILL_ORDER.some((p) => p !== pkg && l.includes(p)));
+      if (noOtherPolyfillsAbove && i + 1 < lines.length && lines[i + 1].trim() === '') i++;
       continue;
     }
     out.push(lines[i]);
@@ -234,19 +277,37 @@ function parseTargets(src) {
     .filter(Boolean);
 }
 
-function writeTarget(src, name, on) {
-  const current = parseTargets(src);
-  const next = on
-    ? (current.includes(name) ? current : [...current, name])
-    : current.filter((t) => t !== name);
+function setTargets(src, targets) {
   const span = findTargetArray(src);
   if (!span) {
-    if (next.length === 0) return src;
-    return insertTargetLine(src, next);
+    if (targets.length === 0) return src;
+    return insertTargetLine(src, targets);
   }
-  if (next.length === 0) return removeTargetLine(src);
-  const inner = next.map((t) => `'${t}'`).join(', ');
+  if (targets.length === 0) return removeTargetLine(src);
+  const inner = targets.map((t) => `'${t}'`).join(', ');
   return src.slice(0, span.open + 1) + inner + src.slice(span.close);
+}
+
+function setBabelMode(src, mode) {
+  const tag = "'@babel/env'";
+  const i = src.indexOf(tag);
+  if (i < 0) return src;
+  // Walk back to the enclosing '[' for the preset entry.
+  let open = i - 1;
+  while (open >= 0 && src[open] !== '[') open--;
+  if (open < 0) return src;
+  // Find the matching ']' by bracket depth.
+  let depth = 0;
+  let close = -1;
+  for (let k = open; k < src.length; k++) {
+    if (src[k] === '[') depth++;
+    else if (src[k] === ']') { depth--; if (depth === 0) { close = k; break; } }
+  }
+  if (close < 0) return src;
+  const replacement = mode === 'es5'
+    ? "['@babel/env']"
+    : "['@babel/env', { targets: 'last 2 chrome versions' }]";
+  return src.slice(0, open) + replacement + src.slice(close + 1);
 }
 
 function insertTargetLine(src, targets) {
