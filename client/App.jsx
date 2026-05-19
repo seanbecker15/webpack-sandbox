@@ -240,7 +240,35 @@ function writeTarget(src, name, on) {
     ? (current.includes(name) ? current : [...current, name])
     : current.filter((t) => t !== name);
   const span = findTargetArray(src);
-  if (!span) return src;
+  if (!span) {
+    if (next.length === 0) return src;
+    return insertTargetLine(src, next);
+  }
+  if (next.length === 0) return removeTargetLine(src);
   const inner = next.map((t) => `'${t}'`).join(', ');
   return src.slice(0, span.open + 1) + inner + src.slice(span.close);
+}
+
+function insertTargetLine(src, targets) {
+  const i = src.indexOf('module.exports');
+  if (i < 0) return src;
+  const brace = src.indexOf('{', i);
+  if (brace < 0) return src;
+  let pos = brace + 1;
+  if (src[pos] === '\n') pos++;
+  const value = `[${targets.map((t) => `'${t}'`).join(', ')}]`;
+  return src.slice(0, pos) + `  target: ${value},\n` + src.slice(pos);
+}
+
+function removeTargetLine(src) {
+  const i = src.indexOf('target:');
+  if (i < 0) return src;
+  const lineStart = src.lastIndexOf('\n', i) + 1; // 0 if no prior newline
+  const close = src.indexOf(']', i);
+  if (close < 0) return src;
+  let end = close + 1;
+  if (src[end] === ',') end++;
+  while (end < src.length && (src[end] === ' ' || src[end] === '\t')) end++;
+  if (src[end] === '\n') end++;
+  return src.slice(0, lineStart) + src.slice(end);
 }
