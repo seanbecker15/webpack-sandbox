@@ -48,6 +48,14 @@ export default function App() {
   const [userCodeLine, setUserCodeLine] = useState(1);
   const outputEditorRef = useRef(null);
 
+  const currentTargets = parseTargets(config);
+  const targetWeb = currentTargets.includes('web');
+  const targetEs5 = currentTargets.includes('es5');
+
+  function toggleTarget(name, on) {
+    setConfig((src) => writeTarget(src, name, on));
+  }
+
   useEffect(() => {
     if (outputEditorRef.current && userCodeLine > 1) {
       outputEditorRef.current.revealLineInCenter(userCodeLine);
@@ -105,10 +113,36 @@ export default function App() {
         {error && <span style={{ color: '#f48771', fontSize: 12, whiteSpace: 'pre-wrap' }}>{error}</span>}
       </header>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', flex: 1, minHeight: 0 }}>
-        <Pane title="webpack.config.js">
+        <Pane
+          title="webpack.config.js"
+          actions={
+            <>
+              <label style={checkboxLabel}>
+                <input type="checkbox" checked={targetWeb} onChange={(e) => toggleTarget('web', e.target.checked)} />
+                web
+              </label>
+              <label style={checkboxLabel}>
+                <input type="checkbox" checked={targetEs5} onChange={(e) => toggleTarget('es5', e.target.checked)} />
+                es5
+              </label>
+            </>
+          }
+        >
           <Editor language="javascript" theme="vs-dark" value={config} onChange={(v) => setConfig(v ?? '')} options={editorOpts} />
         </Pane>
-        <Pane title="source (ES6+)">
+        <Pane
+          title="source (ES6+)"
+          actions={
+            <label style={checkboxLabel}>
+              <input
+                type="checkbox"
+                checked={hasCoreJs(code)}
+                onChange={(e) => setCode((src) => toggleCoreJs(src, e.target.checked))}
+              />
+              core-js/stable
+            </label>
+          }
+        >
           <Editor language="javascript" theme="vs-dark" value={code} onChange={(v) => setCode(v ?? '')} options={editorOpts} />
         </Pane>
         <Pane
@@ -146,3 +180,67 @@ function Pane({ title, actions, children }) {
 }
 
 const paneBtn = { padding: '2px 8px', fontSize: 11, background: '#3c3c3c', color: '#ddd', border: '1px solid #555', borderRadius: 3, cursor: 'pointer' };
+const checkboxLabel = { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, cursor: 'pointer' };
+
+const CORE_JS_IMPORT = "import 'core-js/stable';";
+
+function hasCoreJs(src) {
+  return src.includes('core-js/stable');
+}
+
+function toggleCoreJs(src, on) {
+  if (on) {
+    if (hasCoreJs(src)) return src;
+    const firstLine = src.split('\n', 1)[0];
+    const separator = firstLine.trim() === '' ? '\n' : '\n\n';
+    return CORE_JS_IMPORT + separator + src;
+  }
+  const lines = src.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes('core-js/stable')) {
+      if (i + 1 < lines.length && lines[i + 1].trim() === '') i++;
+      continue;
+    }
+    out.push(lines[i]);
+  }
+  return out.join('\n');
+}
+
+function findTargetArray(src) {
+  const i = src.indexOf('target:');
+  if (i < 0) return null;
+  const open = src.indexOf('[', i);
+  if (open < 0) return null;
+  const close = src.indexOf(']', open);
+  if (close < 0) return null;
+  return { open, close };
+}
+
+function unquote(s) {
+  const t = s.trim();
+  if (t.length >= 2 && (t[0] === "'" || t[0] === '"') && t[t.length - 1] === t[0]) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+function parseTargets(src) {
+  const span = findTargetArray(src);
+  if (!span) return [];
+  return src.slice(span.open + 1, span.close)
+    .split(',')
+    .map(unquote)
+    .filter(Boolean);
+}
+
+function writeTarget(src, name, on) {
+  const current = parseTargets(src);
+  const next = on
+    ? (current.includes(name) ? current : [...current, name])
+    : current.filter((t) => t !== name);
+  const span = findTargetArray(src);
+  if (!span) return src;
+  const inner = next.map((t) => `'${t}'`).join(', ');
+  return src.slice(0, span.open + 1) + inner + src.slice(span.close);
+}
